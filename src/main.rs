@@ -19,6 +19,7 @@ extern crate alloc;
 
 pub mod ble;
 pub mod network;
+pub mod servo;
 pub mod status_led;
 pub mod storage;
 pub mod ws2812;
@@ -57,10 +58,9 @@ async fn main(spawner: Spawner) -> ! {
         .into_async();
 
     status_led::init(spawner, rmt.channel0, peripherals.GPIO8);
+    servo::init(spawner, rmt.channel1, peripherals.GPIO6);
     storage::init(peripherals.FLASH);
     network::init_network(spawner, peripherals.WIFI);
-
-    // GPIO9 is the BOOT button on the ESP32-C6-DevKitC-1.
     ble::init(spawner, peripherals.BT, peripherals.GPIO9);
 
     core::future::pending().await

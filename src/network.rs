@@ -19,8 +19,7 @@ static NETWORK_STACK_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new(
 
 /// The credentials the station connects with. Empty until [`connection_task`] loads them from
 /// flash, and `None` while the station should stay disconnected.
-static WIFI_CREDENTIALS: Watch<CriticalSectionRawMutex, Option<WifiCredentials>, 1> =
-    Watch::new();
+static WIFI_CREDENTIALS: Watch<CriticalSectionRawMutex, Option<WifiCredentials>, 1> = Watch::new();
 
 /// Delay before retrying after a failed connection attempt or a dropped connection.
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
@@ -146,7 +145,7 @@ async fn connection_task(mut controller: WifiController<'static>) -> ! {
     let mut credentials = receiver.get().await;
 
     loop {
-        let Some(current) = &credentials else {
+        let Some(current_credentials) = &credentials else {
             info!("no Wi-Fi credentials set, waiting for them to be set");
             set_wifi_status(WifiStatus::Unconfigured);
 
@@ -160,10 +159,15 @@ async fn connection_task(mut controller: WifiController<'static>) -> ! {
             continue;
         };
 
-        info!("connecting to Wi-Fi network {}", current.ssid);
+        info!("connecting to Wi-Fi network {}", current_credentials.ssid);
         set_wifi_status(WifiStatus::Connecting);
 
-        match select(connect(&mut controller, current), receiver.changed()).await {
+        match select(
+            connect(&mut controller, current_credentials),
+            receiver.changed(),
+        )
+        .await
+        {
             Either::First(Ok(())) => {
                 info!("connected to Wi-Fi");
                 set_wifi_status(WifiStatus::Connected);
