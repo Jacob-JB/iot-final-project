@@ -107,3 +107,11 @@ pub async fn store<'a, V: Value<'a>>(key: StorageKey, value: &V) -> Result<(), S
 
     map.store_item(data_buffer, &(key as u8), value).await
 }
+
+/// Removes the value stored under `key`. Succeeds if there is no such value.
+pub async fn remove(key: StorageKey) -> Result<(), StorageError> {
+    let mut storage = storage().lock().await;
+    let Storage { map, data_buffer } = &mut *storage;
+
+    map.remove_item(data_buffer, &(key as u8)).await
+}

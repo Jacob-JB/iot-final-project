@@ -42,6 +42,6 @@ impl<'d> Ws2812Writer<'d> {
             };
         }
 
-        self.rmt_channel.transmit(&pulses).await.unwrap();
+        let _ = self.rmt_channel.transmit(&pulses).await;
     }
 }

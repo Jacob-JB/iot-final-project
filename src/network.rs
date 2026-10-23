@@ -17,8 +17,10 @@ use crate::{
 
 static NETWORK_STACK_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
 
-/// The credentials the station connects with. Empty until credentials are loaded or set.
-static WIFI_CREDENTIALS: Watch<CriticalSectionRawMutex, WifiCredentials, 1> = Watch::new();
+/// The credentials the station connects with. Empty until [`connection_task`] loads them from
+/// flash, and `None` while the station should stay disconnected.
+static WIFI_CREDENTIALS: Watch<CriticalSectionRawMutex, Option<WifiCredentials>, 1> =
+    Watch::new();
 
 /// Delay before retrying after a failed connection attempt or a dropped connection.
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
@@ -84,12 +86,21 @@ fn deserialize_str<const N: usize>(
 /// The station keeps its current credentials if saving fails.
 pub async fn set_wifi_credentials(credentials: WifiCredentials) -> Result<(), StorageError> {
     storage::store(StorageKey::WifiCredentials, &credentials).await?;
-    WIFI_CREDENTIALS.sender().send(credentials);
+    WIFI_CREDENTIALS.sender().send(Some(credentials));
+    Ok(())
+}
+
+/// Removes the credentials from flash, then disconnects the station.
+///
+/// The station keeps its current credentials if removing them fails.
+pub async fn clear_wifi_credentials() -> Result<(), StorageError> {
+    storage::remove(StorageKey::WifiCredentials).await?;
+    WIFI_CREDENTIALS.sender().send(None);
     Ok(())
 }
 
 pub fn wifi_credentials() -> Option<WifiCredentials> {
-    WIFI_CREDENTIALS.try_get()
+    WIFI_CREDENTIALS.try_get().flatten()
 }
 
 /// Requires [`storage::init`] to have been called.
@@ -129,19 +140,30 @@ async fn connection_task(mut controller: WifiController<'static>) -> ! {
         .receiver()
         .expect("Wi-Fi credentials receiver already taken");
 
-    if let Some(stored) = storage::load::<WifiCredentials>(StorageKey::WifiCredentials).await {
-        WIFI_CREDENTIALS.sender().send(stored);
-    } else {
-        info!("no Wi-Fi credentials stored, waiting for them to be set");
-    }
+    let stored = storage::load::<WifiCredentials>(StorageKey::WifiCredentials).await;
+    WIFI_CREDENTIALS.sender().send(stored);
 
     let mut credentials = receiver.get().await;
 
     loop {
-        info!("connecting to Wi-Fi network {}", credentials.ssid);
+        let Some(current) = &credentials else {
+            info!("no Wi-Fi credentials set, waiting for them to be set");
+            set_wifi_status(WifiStatus::Unconfigured);
+
+            if controller.is_connected()
+                && let Err(e) = controller.disconnect_async().await
+            {
+                warn!("failed to disconnect from Wi-Fi: {}", e);
+            }
+
+            credentials = receiver.changed().await;
+            continue;
+        };
+
+        info!("connecting to Wi-Fi network {}", current.ssid);
         set_wifi_status(WifiStatus::Connecting);
 
-        match select(connect(&mut controller, &credentials), receiver.changed()).await {
+        match select(connect(&mut controller, current), receiver.changed()).await {
             Either::First(Ok(())) => {
                 info!("connected to Wi-Fi");
                 set_wifi_status(WifiStatus::Connected);
@@ -149,6 +171,7 @@ async fn connection_task(mut controller: WifiController<'static>) -> ! {
                 match select(controller.wait_for_disconnect_async(), receiver.changed()).await {
                     Either::First(_) => {
                         warn!("Wi-Fi disconnected");
+                        set_wifi_status(WifiStatus::Connecting);
                         Timer::after(RECONNECT_DELAY).await;
                     }
                     Either::Second(new_credentials) => {

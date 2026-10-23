@@ -10,15 +10,22 @@ use esp_hal::{Async, gpio::interconnect::PeripheralOutput, rmt::TxChannelCreator
 use crate::ws2812::Ws2812Writer;
 
 static STATUS: Watch<CriticalSectionRawMutex, DeviceStatus, 1> = Watch::new_with(DeviceStatus {
-    ble_enabled: false,
+    ble: BleStatus::Disabled,
     wifi: WifiStatus::Unconfigured,
 });
 
 /// Status reported by the parts of the device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct DeviceStatus {
-    pub ble_enabled: bool,
+    pub ble: BleStatus,
     pub wifi: WifiStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum BleStatus {
+    Disabled,
+    Advertising,
+    Connected,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -80,22 +87,24 @@ async fn led_task(
 
 /// Displays `status` on the LED until cancelled. Restarted whenever the status changes.
 async fn show(led: &mut Ws2812Writer<'static>, status: DeviceStatus) -> ! {
-    led.write(0, 0, 0).await;
+    let mut flash = async |r, g, b, time| {
+        led.write(r, g, b).await;
+        Timer::after(Duration::from_millis(time)).await;
+    };
 
     loop {
-        led.write(0, 0, 0).await;
-        Timer::after(Duration::from_secs(5)).await;
-
-        if status.ble_enabled {
-            led.write(0, 0, 10).await;
-            Timer::after(Duration::from_millis(500)).await;
+        match status.ble {
+            BleStatus::Disabled => (),
+            BleStatus::Advertising => flash(0, 0, 10, 500).await,
+            BleStatus::Connected => flash(10, 0, 10, 500).await,
         }
 
         match status.wifi {
-            WifiStatus::Unconfigured => continue,
-            WifiStatus::Connecting => led.write(10, 10, 0).await,
-            WifiStatus::Connected => led.write(0, 10, 0).await,
+            WifiStatus::Unconfigured => (),
+            WifiStatus::Connecting => flash(10, 10, 0, 500).await,
+            WifiStatus::Connected => flash(0, 10, 0, 500).await,
         };
-        Timer::after(Duration::from_millis(500)).await;
+
+        flash(0, 0, 0, 2000).await;
     }
 }

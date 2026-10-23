@@ -13,11 +13,11 @@ use esp_hal::clock::CpuClock;
 use esp_hal::rmt::Rmt;
 use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
-use esp_radio::ble::controller::BleConnector;
 use panic_rtt_target as _;
 
 extern crate alloc;
 
+pub mod ble;
 pub mod network;
 pub mod status_led;
 pub mod storage;
@@ -60,7 +60,8 @@ async fn main(spawner: Spawner) -> ! {
     storage::init(peripherals.FLASH);
     network::init_network(spawner, peripherals.WIFI);
 
-    let _connector = BleConnector::new(peripherals.BT, Default::default());
+    // GPIO9 is the BOOT button on the ESP32-C6-DevKitC-1.
+    ble::init(spawner, peripherals.BT, peripherals.GPIO9);
 
     core::future::pending().await
 }

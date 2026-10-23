@@ -34,12 +34,6 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "bitfield"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d7e60934ceec538daadb9d8432424ed043a904d8e0243f3c6446bce549a46ac"
-
-[[package]]
-name = "bitfield"
 version = "0.19.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b45721c9db4c7a20899d05efb7ad9235f50b256e980db30ffb229abf732934c3"
@@ -69,46 +63,6 @@ name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
-
-[[package]]
-name = "bleps"
-version = "0.1.0"
-source = "git+https://github.com/bjoernQ/bleps?rev=a5148d8ae679e021b78f53fd33afb8bb35d0b62e#a5148d8ae679e021b78f53fd33afb8bb35d0b62e"
-dependencies = [
- "bitfield 0.14.0",
- "bleps-dedup",
- "bleps-macros",
- "critical-section",
- "embedded-io 0.6.1",
- "embedded-io-async 0.6.1",
- "futures",
- "log",
- "rand_core 0.6.4",
-]
-
-[[package]]
-name = "bleps-dedup"
-version = "0.1.0"
-source = "git+https://github.com/bjoernQ/bleps?rev=a5148d8ae679e021b78f53fd33afb8bb35d0b62e#a5148d8ae679e021b78f53fd33afb8bb35d0b62e"
-dependencies = [
- "darling 0.20.11",
- "proc-macro-error",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "bleps-macros"
-version = "0.1.0"
-source = "git+https://github.com/bjoernQ/bleps?rev=a5148d8ae679e021b78f53fd33afb8bb35d0b62e#a5148d8ae679e021b78f53fd33afb8bb35d0b62e"
-dependencies = [
- "litrs 0.2.3",
- "proc-macro2",
- "quote",
- "syn 1.0.109",
- "uuid",
-]
 
 [[package]]
 name = "block-buffer"
@@ -141,6 +95,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f5f48f1e9b0aad0a4f05d17bdeae0fa20ff798e272a03a6940ca27ad9c5a6ae7"
 dependencies = [
  "defmt 0.3.101",
+ "uuid",
 ]
 
 [[package]]
@@ -209,6 +164,15 @@ name = "const-default"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b396d1f76d455557e1218ec8066ae14bba60b4b36ecd55577ba979f5db7ecaa"
+
+[[package]]
+name = "convert_case"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "baaaa0ecca5b51987b9423ccdc971514dd8b0bb7b4060b983d3664dad3f1f89f"
+dependencies = [
+ "unicode-segmentation",
+]
 
 [[package]]
 name = "cordyceps"
@@ -435,7 +399,7 @@ version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4b8a88685455ed29a21542a33abd9cb6510b6b129abadabdcef0f4c55bc8f61"
 dependencies = [
- "litrs 1.0.1",
+ "litrs",
 ]
 
 [[package]]
@@ -555,6 +519,7 @@ checksum = "73974a3edbd0bd286759b3d483540f0ebef705919a5f56f4fc7709066f71689b"
 dependencies = [
  "cfg-if",
  "critical-section",
+ "defmt 1.2.0",
  "embedded-io-async 0.6.1",
  "futures-core",
  "futures-sink",
@@ -800,7 +765,7 @@ version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e2874462a2a0faca8b6318a10b0db87d2b7cd74dded82b3dfd780c07a319038"
 dependencies = [
- "bitfield 0.19.5",
+ "bitfield",
  "bitflags 2.13.2",
  "bytemuck",
  "cfg-if",
@@ -1423,14 +1388,13 @@ dependencies = [
 name = "iot-final-project"
 version = "0.1.0"
 dependencies = [
- "bleps",
  "critical-section",
  "defmt 1.2.0",
  "embassy-embedded-hal",
  "embassy-executor",
  "embassy-futures",
  "embassy-net",
- "embassy-sync 0.8.0",
+ "embassy-sync 0.7.2",
  "embassy-time",
  "embedded-io 0.7.1",
  "embedded-io-async 0.7.0",
@@ -1446,6 +1410,7 @@ dependencies = [
  "sequential-storage",
  "smoltcp",
  "static_cell",
+ "trouble-host",
 ]
 
 [[package]]
@@ -1519,15 +1484,6 @@ name = "linked_list_allocator"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b23ac50abb8261cb38c6e2a7192d3302e0836dac1628f6a93b82b4fad185897"
-
-[[package]]
-name = "litrs"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9275e0933cf8bb20f008924c0cb07a0692fe54d8064996520bf998de9eb79aa"
-dependencies = [
- "proc-macro2",
-]
 
 [[package]]
 name = "litrs"
@@ -1710,30 +1666,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e67ba7e9b2b56446f1d419b1d807906278ffa1a658a8a5d8a39dcb1f5a78614f"
 dependencies = [
  "toml_edit",
-]
-
-[[package]]
-name = "proc-macro-error"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da25490ff9892aab3fcf7c36f08cfb902dd3e71ca0f9f9517bea02a73a5ce38c"
-dependencies = [
- "proc-macro-error-attr",
- "proc-macro2",
- "quote",
- "syn 1.0.109",
- "version_check",
-]
-
-[[package]]
-name = "proc-macro-error-attr"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1be40180e52ecc98ad80b184934baf3d0d29f979574e439af5a55274b35f869"
-dependencies = [
- "proc-macro2",
- "quote",
- "version_check",
 ]
 
 [[package]]
@@ -2217,6 +2149,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "trouble-host"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1df7817cead4b83dfbeeaa59736ecbc97c30b21dc3bfc0cc2ce8a6687f70b37a"
+dependencies = [
+ "bt-hci",
+ "defmt 1.2.0",
+ "embassy-futures",
+ "embassy-sync 0.7.2",
+ "embassy-time",
+ "embedded-io 0.7.1",
+ "futures",
+ "heapless 0.9.3",
+ "rand_core 0.6.4",
+ "static_cell",
+ "trouble-host-macros",
+ "zerocopy",
+]
+
+[[package]]
+name = "trouble-host-macros"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d809ae05f510cf8f1d863749281eb28e049d9ae4ad52d92ea7a0ac068a0e17c"
+dependencies = [
+ "convert_case",
+ "darling 0.20.11",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "uuid",
+]
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2233,6 +2199,12 @@ name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
+
+[[package]]
+name = "unicode-segmentation"
+version = "1.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
 name = "unsafe-libyaml"
@@ -2387,6 +2359,26 @@ name = "xtensa-lx-rt-proc-macros"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96fb42cd29c42f8744c74276e9f5bee7b06685bbe5b88df891516d72cb320450"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "zerocopy"
+version = "0.8.63"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5fe1f8f1b06191a00962174c61aa5005e0bb391a6d80d07e24d115c01a92ed8"
+dependencies = [
+ "zerocopy-derive",
+]
+
+[[package]]
+name = "zerocopy-derive"
+version = "0.8.63"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "863ad3ac83293fb4d740aedbfdc9240dd8d1a50c1099acd76ce80ce7c7230c7f"
 dependencies = [
  "proc-macro2",
  "quote",
