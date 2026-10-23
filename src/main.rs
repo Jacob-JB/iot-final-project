@@ -19,6 +19,7 @@ extern crate alloc;
 
 pub mod device_state;
 pub mod network;
+pub mod storage;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -49,6 +50,7 @@ async fn main(spawner: Spawner) -> ! {
 
     info!("Embassy initialized!");
 
+    storage::init(peripherals.FLASH);
     network::init_network(spawner, peripherals.WIFI);
 
     let _connector = BleConnector::new(peripherals.BT, Default::default());
