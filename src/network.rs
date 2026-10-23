@@ -10,7 +10,10 @@ use esp_radio::wifi::{
 use sequential_storage::map::{SerializationError, Value};
 use static_cell::StaticCell;
 
-use crate::storage::{self, StorageError, StorageKey};
+use crate::{
+    status_led::{self, WifiStatus},
+    storage::{self, StorageError, StorageKey},
+};
 
 static NETWORK_STACK_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
 
@@ -136,10 +139,12 @@ async fn connection_task(mut controller: WifiController<'static>) -> ! {
 
     loop {
         info!("connecting to Wi-Fi network {}", credentials.ssid);
+        set_wifi_status(WifiStatus::Connecting);
 
         match select(connect(&mut controller, &credentials), receiver.changed()).await {
             Either::First(Ok(())) => {
                 info!("connected to Wi-Fi");
+                set_wifi_status(WifiStatus::Connected);
 
                 match select(controller.wait_for_disconnect_async(), receiver.changed()).await {
                     Either::First(_) => {
@@ -166,6 +171,10 @@ async fn connection_task(mut controller: WifiController<'static>) -> ! {
             Either::Second(new_credentials) => credentials = new_credentials,
         }
     }
+}
+
+fn set_wifi_status(wifi: WifiStatus) {
+    status_led::update_status(|status| status.wifi = wifi);
 }
 
 async fn connect(
