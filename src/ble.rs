@@ -59,6 +59,11 @@ struct MqttService {
     #[descriptor(uuid = descriptors::CHARACTERISTIC_USER_DESCRIPTION, read, value = "Topic prefix")]
     #[characteristic(uuid = "5c0b1a10-6f2e-4b8e-9d3a-7e1f2a3b4d03", read, write)]
     topic_prefix: heapless::String<64>,
+
+    /// Must satisfy [`mqtt::is_valid_device_id`].
+    #[descriptor(uuid = descriptors::CHARACTERISTIC_USER_DESCRIPTION, read, value = "Device ID")]
+    #[characteristic(uuid = "5c0b1a10-6f2e-4b8e-9d3a-7e1f2a3b4d04", read, write)]
+    device_id: heapless::String<32>,
 }
 
 #[gatt_server]
@@ -156,6 +161,7 @@ async fn serve(
     server.set(&server.mqtt_service.broker_host, &mqtt_config.broker_host)?;
     server.set(&server.mqtt_service.broker_port, &mqtt_config.broker_port)?;
     server.set(&server.mqtt_service.topic_prefix, &mqtt_config.topic_prefix)?;
+    server.set(&server.mqtt_service.device_id, &mqtt_config.device_id)?;
 
     loop {
         set_ble_status(BleStatus::Advertising);
@@ -280,6 +286,14 @@ async fn serve_connection(
                             Err(code) => event.reject(code),
                         }
                     }
+                    GattEvent::Write(write)
+                        if write.handle() == server.mqtt_service.device_id.handle =>
+                    {
+                        match set_device_id(write.data()).await {
+                            Ok(()) => event.accept(),
+                            Err(code) => event.reject(code),
+                        }
+                    }
                     _ => event.accept(),
                 };
 
@@ -355,6 +369,15 @@ async fn set_topic_prefix(prefix: &[u8]) -> Result<(), AttErrorCode> {
 
     info!("MQTT topic prefix set over BLE to {}", prefix);
     update_mqtt_config(|config| config.topic_prefix = prefix).await
+}
+
+async fn set_device_id(id: &[u8]) -> Result<(), AttErrorCode> {
+    let id = parse_str::<32>(id)
+        .filter(|id| mqtt::is_valid_device_id(id))
+        .ok_or(AttErrorCode::VALUE_NOT_ALLOWED)?;
+
+    info!("MQTT device ID set over BLE to {}", id);
+    update_mqtt_config(|config| config.device_id = id).await
 }
 
 /// Saves and applies the current MQTT config with `update` applied to it.

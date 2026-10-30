@@ -1,5 +1,5 @@
-use alloc::format;
-use core::convert::Infallible;
+use alloc::{format, string::String};
+use core::{convert::Infallible, fmt::Write};
 
 use defmt::{info, warn};
 use embassy_executor::Spawner;
@@ -12,14 +12,17 @@ use rust_mqtt::{
     buffer::AllocBuffer,
     client::{
         Client,
-        options::{ConnectOptions, PublicationOptions, TopicReference},
+        event::Event,
+        options::{ConnectOptions, PublicationOptions, SubscriptionOptions, TopicReference},
     },
     types::{MqttString, TopicName},
 };
 use sequential_storage::map::{SerializationError, Value};
+use serde::Deserialize;
 
 use crate::{
     sensors::SensorReading,
+    servo,
     storage::{self, StorageError, StorageKey, deserialize_str, serialize_str},
 };
 
@@ -27,11 +30,19 @@ const DEFAULT_BROKER_HOST: &str = "broker.emqx.io";
 const DEFAULT_BROKER_PORT: u16 = 1883;
 const DEFAULT_TOPIC_PREFIX: &str = "jacob-brendan/smartblind";
 
-/// Must be unique among the clients connected to the broker.
-const CLIENT_ID: &str = "jacob-brendan-smartblind";
+/// Joined to [`MqttConfig::device_id`] with a `-` to form the client ID.
+const CLIENT_ID_PREFIX: &str = "jacob-brendan-smartblind";
 
-/// Topic under [`MqttConfig::topic_prefix`] that each [`SensorReading`] is published to as JSON.
+/// Topic level in place of a device ID that addresses every device under the same
+/// [`MqttConfig::topic_prefix`].
+const BROADCAST_ID: &str = "all";
+
+/// Device topic that each [`SensorReading`] is published to as JSON.
 const SENSOR_SUBTOPIC: &str = "sensors";
+
+/// Device topic that [`Command`]s are received on, both under this device's ID and under
+/// [`BROADCAST_ID`].
+const COMMAND_SUBTOPIC: &str = "command";
 
 /// Delay before reconnecting after the broker connection fails or drops.
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
@@ -45,12 +56,23 @@ static MQTT_CONFIG: Watch<CriticalSectionRawMutex, MqttConfig, 1> = Watch::new()
 /// The latest reading not yet published.
 static PENDING_READING: Signal<CriticalSectionRawMutex, SensorReading> = Signal::new();
 
+/// A command received over MQTT as JSON.
+#[derive(Deserialize)]
+struct Command {
+    /// Servo position from 0 to 1, as described by [`servo::Servo::write_position`].
+    position: f32,
+}
+
 #[derive(Clone)]
 pub struct MqttConfig {
     pub broker_host: heapless::String<64>,
     pub broker_port: u16,
-    /// Topics are published under this prefix followed by a `/`. It must be a valid topic name.
+    /// Device topics are named `<topic_prefix>/<device_id>/<subtopic>`. It must be a valid topic
+    /// name.
     pub topic_prefix: heapless::String<64>,
+    /// Must satisfy [`is_valid_device_id`]. It must also be unique among the devices sharing a
+    /// broker, because it is part of the client ID.
+    pub device_id: heapless::String<32>,
 }
 
 impl Default for MqttConfig {
@@ -59,8 +81,26 @@ impl Default for MqttConfig {
             broker_host: heapless::String::try_from(DEFAULT_BROKER_HOST).unwrap(),
             broker_port: DEFAULT_BROKER_PORT,
             topic_prefix: heapless::String::try_from(DEFAULT_TOPIC_PREFIX).unwrap(),
+            device_id: default_device_id(),
         }
     }
+}
+
+/// Returns the last three bytes of the chip's base MAC address in lowercase hex.
+fn default_device_id() -> heapless::String<32> {
+    let mac = esp_hal::efuse::base_mac_address();
+    let mut id = heapless::String::new();
+
+    for byte in &mac.as_bytes()[3..] {
+        write!(id, "{:02x}", byte).unwrap();
+    }
+
+    id
+}
+
+/// Returns whether `id` is a single non-empty topic level other than the broadcast ID `all`.
+pub fn is_valid_device_id(id: &str) -> bool {
+    !id.is_empty() && !id.contains(['/', '+', '#']) && id != BROADCAST_ID
 }
 
 impl<'a> Value<'a> for MqttConfig {
@@ -71,8 +111,9 @@ impl<'a> Value<'a> for MqttConfig {
             .ok_or(SerializationError::BufferTooSmall)?;
         port.copy_from_slice(&self.broker_port.to_le_bytes());
         let prefix_len = serialize_str(&self.topic_prefix, &mut buffer[host_len + 2..])?;
+        let id_len = serialize_str(&self.device_id, &mut buffer[host_len + 2 + prefix_len..])?;
 
-        Ok(host_len + 2 + prefix_len)
+        Ok(host_len + 2 + prefix_len + id_len)
     }
 
     fn deserialize_from(buffer: &'a [u8]) -> Result<(Self, usize), SerializationError> {
@@ -82,14 +123,16 @@ impl<'a> Value<'a> for MqttConfig {
             .ok_or(SerializationError::InvalidFormat)?;
         let broker_port = u16::from_le_bytes([port[0], port[1]]);
         let (topic_prefix, prefix_len) = deserialize_str(&buffer[host_len + 2..])?;
+        let (device_id, id_len) = deserialize_str(&buffer[host_len + 2 + prefix_len..])?;
 
         Ok((
             Self {
                 broker_host,
                 broker_port,
                 topic_prefix,
+                device_id,
             },
-            host_len + 2 + prefix_len,
+            host_len + 2 + prefix_len + id_len,
         ))
     }
 }
@@ -115,7 +158,8 @@ pub fn publish_reading(reading: SensorReading) {
     PENDING_READING.signal(reading);
 }
 
-/// Starts publishing the readings given to [`publish_reading`] whenever `stack` is connected.
+/// Starts publishing the readings given to [`publish_reading`] and applying received
+/// [`Command`]s whenever `stack` is connected.
 ///
 /// Requires [`storage::init`] to have been called.
 ///
@@ -156,8 +200,8 @@ async fn mqtt_task(stack: Stack<'static>) -> ! {
     }
 }
 
-/// Waits for the network, connects to the broker and publishes readings until the connection
-/// fails.
+/// Waits for the network, connects to the broker, then publishes readings and applies commands
+/// until the connection fails.
 #[allow(
     clippy::large_stack_frames,
     reason = "the socket buffers live on the task's stack"
@@ -191,31 +235,56 @@ async fn run_session(
         .map_err(|_| "failed to open a TCP connection to the broker")?;
 
     let mut buffer = AllocBuffer;
-    let mut client = Client::<'_, _, _, 1, 1, 1, 1>::new(&mut buffer);
+    let mut client = Client::<'_, _, _, 2, 1, 1, 1>::new(&mut buffer);
 
+    let client_id = format!("{}-{}", CLIENT_ID_PREFIX, config.device_id);
     client
         .connect(
             socket,
             &ConnectOptions::new().clean_start(),
-            Some(MqttString::try_from(CLIENT_ID).unwrap()),
+            Some(
+                MqttString::try_from(client_id.as_str())
+                    .map_err(|_| "the client ID is too long")?,
+            ),
         )
         .await
         .map_err(|_| "failed to connect to the broker")?;
 
-    info!("connected to MQTT broker");
+    info!("connected to MQTT broker as {}", client_id.as_str());
 
-    let topic = format!("{}/{}", config.topic_prefix, SENSOR_SUBTOPIC);
-    let topic = MqttString::try_from(topic.as_str())
-        .ok()
-        .and_then(TopicName::new)
-        .ok_or("the sensor topic is not a valid topic name")?;
-    let publish_options = PublicationOptions::new(TopicReference::Name(topic)).retain();
+    let topic = |device_id: &str, subtopic: &str| -> String {
+        format!("{}/{}/{}", config.topic_prefix, device_id, subtopic)
+    };
+
+    for command_topic in [
+        topic(&config.device_id, COMMAND_SUBTOPIC),
+        topic(BROADCAST_ID, COMMAND_SUBTOPIC),
+    ] {
+        let topic_name =
+            topic_name(&command_topic).ok_or("a command topic is not a valid topic name")?;
+
+        client
+            .subscribe(topic_name.into(), SubscriptionOptions::new())
+            .await
+            .map_err(|_| "failed to subscribe to a command topic")?;
+
+        info!("subscribing to {}", command_topic.as_str());
+    }
+
+    let sensor_topic = topic(&config.device_id, SENSOR_SUBTOPIC);
+    let sensor_topic =
+        topic_name(&sensor_topic).ok_or("the sensor topic is not a valid topic name")?;
+    let publish_options = PublicationOptions::new(TopicReference::Name(sensor_topic)).retain();
 
     loop {
         match select(client.poll(), PENDING_READING.wait()).await {
-            Either::First(event) => {
-                event.map_err(|_| "failed to poll the broker")?;
-            }
+            Either::First(event) => match event.map_err(|_| "failed to poll the broker")? {
+                Event::Publish(publish) => apply_command(&publish.message),
+                Event::Suback(suback) if suback.reason_code.is_erroneous() => {
+                    return Err("the broker rejected a command subscription");
+                }
+                _ => {}
+            },
             Either::Second(reading) => {
                 let payload = serde_json::to_string(&reading)
                     .map_err(|_| "failed to encode the sensor reading")?;
@@ -226,5 +295,27 @@ async fn run_session(
                     .map_err(|_| "failed to publish the sensor reading")?;
             }
         }
+    }
+}
+
+/// Returns `None` if `topic` is not a valid topic name.
+fn topic_name(topic: &str) -> Option<TopicName<'_>> {
+    MqttString::try_from(topic).ok().and_then(TopicName::new)
+}
+
+/// Applies `payload` if it is a valid [`Command`] JSON object.
+fn apply_command(payload: &[u8]) {
+    match serde_json::from_slice::<Command>(payload) {
+        Ok(Command { position }) if (0.0..=1.0).contains(&position) => {
+            info!("servo position set over MQTT to {}", position);
+            servo::set_position(position);
+        }
+        Ok(Command { position }) => {
+            warn!(
+                "rejected servo position {} because it is outside 0 to 1",
+                position
+            )
+        }
+        Err(_) => warn!("received a command that is not a valid command object"),
     }
 }

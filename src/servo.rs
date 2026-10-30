@@ -1,4 +1,5 @@
 use embassy_executor::Spawner;
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use esp_hal::{
     Async,
     gpio::{self, interconnect::PeripheralOutput},
@@ -13,6 +14,9 @@ const MIN_PULSE_US: u16 = 1_000;
 
 /// Pulse width for the servo's maximum position.
 const MAX_PULSE_US: u16 = 2_000;
+
+/// The latest position given to [`set_position`] that the servo task hasn't picked up.
+static TARGET_POSITION: Signal<CriticalSectionRawMutex, f32> = Signal::new();
 
 /// Drives an SG90 servo with a 50 Hz pulse train.
 pub struct Servo<'d> {
@@ -52,9 +56,27 @@ impl<'d> Servo<'d> {
 
         let _ = self.rmt_channel.transmit(&frame).await;
     }
+
+    /// Sends frames for `position`, where 0 is the [`MIN_PULSE_US`] end and 1 is the
+    /// [`MAX_PULSE_US`] end.
+    ///
+    /// `position` is clamped to the range between 0 and 1.
+    pub async fn write_position(&mut self, position: f32) {
+        let span = f32::from(MAX_PULSE_US - MIN_PULSE_US);
+        let pulse_us = MIN_PULSE_US + (position.clamp(0.0, 1.0) * span) as u16;
+
+        self.write_pulse(pulse_us).await;
+    }
 }
 
-/// Starts sweeping the servo connected to `pin` between its end positions.
+/// Moves the servo to `position` and holds it there, as described by [`Servo::write_position`].
+pub fn set_position(position: f32) {
+    TARGET_POSITION.signal(position);
+}
+
+/// Starts driving the servo connected to `pin` to the positions given to [`set_position`].
+///
+/// The servo is not driven until the first position is set.
 ///
 /// The RMT peripheral must be clocked at 80 MHz.
 ///
@@ -72,6 +94,14 @@ pub fn init(
 }
 
 #[embassy_executor::task]
-async fn servo_task(mut _servo: Servo<'static>) -> ! {
-    core::future::pending().await
+async fn servo_task(mut servo: Servo<'static>) -> ! {
+    let mut position = TARGET_POSITION.wait().await;
+
+    loop {
+        if let Some(new_position) = TARGET_POSITION.try_take() {
+            position = new_position;
+        }
+
+        servo.write_position(position).await;
+    }
 }
