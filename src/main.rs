@@ -18,7 +18,9 @@ use panic_rtt_target as _;
 extern crate alloc;
 
 pub mod ble;
+pub mod mqtt;
 pub mod network;
+pub mod sensors;
 pub mod servo;
 pub mod status_led;
 pub mod storage;
@@ -59,8 +61,10 @@ async fn main(spawner: Spawner) -> ! {
 
     status_led::init(spawner, rmt.channel0, peripherals.GPIO8);
     servo::init(spawner, rmt.channel1, peripherals.GPIO6);
+    sensors::init(spawner, peripherals.ADC1, peripherals.GPIO4, peripherals.GPIO5);
     storage::init(peripherals.FLASH);
-    network::init_network(spawner, peripherals.WIFI);
+    let stack = network::init_network(spawner, peripherals.WIFI);
+    mqtt::init(spawner, stack);
     ble::init(spawner, peripherals.BT, peripherals.GPIO9);
 
     core::future::pending().await

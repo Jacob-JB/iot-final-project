@@ -1,7 +1,7 @@
 use defmt::{info, warn};
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
-use embassy_net::StackResources;
+use embassy_net::{Stack, StackResources};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, watch::Watch};
 use embassy_time::{Duration, Timer};
 use esp_radio::wifi::{
@@ -12,7 +12,7 @@ use static_cell::StaticCell;
 
 use crate::{
     status_led::{self, WifiStatus},
-    storage::{self, StorageError, StorageKey},
+    storage::{self, StorageError, StorageKey, deserialize_str, serialize_str},
 };
 
 static NETWORK_STACK_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
@@ -52,34 +52,6 @@ impl<'a> Value<'a> for WifiCredentials {
     }
 }
 
-/// Writes `s` as a one byte length followed by its bytes. `s` must be at most 255 bytes.
-fn serialize_str(s: &str, buffer: &mut [u8]) -> Result<usize, SerializationError> {
-    let len = u8::try_from(s.len()).map_err(|_| SerializationError::InvalidData)?;
-    let out = buffer
-        .get_mut(..1 + s.len())
-        .ok_or(SerializationError::BufferTooSmall)?;
-
-    out[0] = len;
-    out[1..].copy_from_slice(s.as_bytes());
-
-    Ok(out.len())
-}
-
-fn deserialize_str<const N: usize>(
-    buffer: &[u8],
-) -> Result<(heapless::String<N>, usize), SerializationError> {
-    let (&len, rest) = buffer
-        .split_first()
-        .ok_or(SerializationError::InvalidFormat)?;
-    let bytes = rest
-        .get(..len as usize)
-        .ok_or(SerializationError::InvalidFormat)?;
-    let s = core::str::from_utf8(bytes).map_err(|_| SerializationError::InvalidFormat)?;
-    let s = heapless::String::try_from(s).map_err(|_| SerializationError::InvalidFormat)?;
-
-    Ok((s, 1 + bytes.len()))
-}
-
 /// Saves `credentials` to flash, then reconnects the station with them.
 ///
 /// The station keeps its current credentials if saving fails.
@@ -102,8 +74,13 @@ pub fn wifi_credentials() -> Option<WifiCredentials> {
     WIFI_CREDENTIALS.try_get().flatten()
 }
 
+/// Starts the network stack and keeps the station connected, returning the stack.
+///
 /// Requires [`storage::init`] to have been called.
-pub fn init_network(spawner: Spawner, wifi_peripheral: esp_hal::peripherals::WIFI<'static>) {
+pub fn init_network(
+    spawner: Spawner,
+    wifi_peripheral: esp_hal::peripherals::WIFI<'static>,
+) -> Stack<'static> {
     let rng = esp_hal::rng::Rng::new();
 
     let (wifi_controller, interfaces) = esp_radio::wifi::new(wifi_peripheral, Default::default())
@@ -111,7 +88,7 @@ pub fn init_network(spawner: Spawner, wifi_peripheral: esp_hal::peripherals::WIF
 
     let net_seed = ((rng.random() as u64) << 32) | rng.random() as u64;
 
-    let (_stack, runner) = embassy_net::new(
+    let (stack, runner) = embassy_net::new(
         interfaces.station,
         embassy_net::Config::dhcpv4(Default::default()),
         NETWORK_STACK_RESOURCES.init_with(StackResources::new),
@@ -122,6 +99,8 @@ pub fn init_network(spawner: Spawner, wifi_peripheral: esp_hal::peripherals::WIF
     spawner.spawn(
         connection_task(wifi_controller).expect("failed to spawn the Wi-Fi connection task"),
     );
+
+    stack
 }
 
 #[embassy_executor::task]

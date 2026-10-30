@@ -1,5 +1,4 @@
 use embassy_executor::Spawner;
-use embassy_time::{Duration, Instant};
 use esp_hal::{
     Async,
     gpio::{self, interconnect::PeripheralOutput},
@@ -14,9 +13,6 @@ const MIN_PULSE_US: u16 = 1_000;
 
 /// Pulse width for the servo's maximum position.
 const MAX_PULSE_US: u16 = 2_000;
-
-/// How long the servo holds each end of its sweep.
-const HOLD_TIME: Duration = Duration::from_secs(2);
 
 /// Drives an SG90 servo with a 50 Hz pulse train.
 pub struct Servo<'d> {
@@ -39,20 +35,22 @@ impl<'d> Servo<'d> {
         }
     }
 
-    /// Sends frames with a high pulse of `pulse_us` microseconds until `duration` has elapsed.
+    /// Sends frames with a high pulse of `pulse_us` microseconds.
     ///
     /// `pulse_us` is clamped to the range between [`MIN_PULSE_US`] and [`MAX_PULSE_US`].
-    pub async fn hold(&mut self, pulse_us: u16, duration: Duration) {
+    pub async fn write_pulse(&mut self, pulse_us: u16) {
         let pulse_us = pulse_us.clamp(MIN_PULSE_US, MAX_PULSE_US);
         let frame = [
-            PulseCode::new(gpio::Level::High, pulse_us, gpio::Level::Low, FRAME_US - pulse_us),
+            PulseCode::new(
+                gpio::Level::High,
+                pulse_us,
+                gpio::Level::Low,
+                FRAME_US - pulse_us,
+            ),
             PulseCode::end_marker(),
         ];
 
-        let end = Instant::now() + duration;
-        while Instant::now() < end {
-            let _ = self.rmt_channel.transmit(&frame).await;
-        }
+        let _ = self.rmt_channel.transmit(&frame).await;
     }
 }
 
@@ -74,9 +72,6 @@ pub fn init(
 }
 
 #[embassy_executor::task]
-async fn servo_task(mut servo: Servo<'static>) -> ! {
-    loop {
-        servo.hold(MIN_PULSE_US, HOLD_TIME).await;
-        servo.hold(MAX_PULSE_US, HOLD_TIME).await;
-    }
+async fn servo_task(mut _servo: Servo<'static>) -> ! {
+    core::future::pending().await
 }

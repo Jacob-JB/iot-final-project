@@ -7,6 +7,7 @@ use esp_radio::ble::controller::{BleConnector, BleConnectorError};
 use trouble_host::prelude::*;
 
 use crate::{
+    mqtt::{self, MqttConfig},
     network::{self, WifiCredentials},
     status_led::{self, BleStatus},
 };
@@ -43,9 +44,27 @@ struct WifiService {
     password: heapless::String<64>,
 }
 
+/// Each write is saved and applied on its own, keeping the other settings as they are.
+#[gatt_service(uuid = "5c0b1a10-6f2e-4b8e-9d3a-7e1f2a3b4d00")]
+struct MqttService {
+    #[descriptor(uuid = descriptors::CHARACTERISTIC_USER_DESCRIPTION, read, value = "Broker host")]
+    #[characteristic(uuid = "5c0b1a10-6f2e-4b8e-9d3a-7e1f2a3b4d01", read, write)]
+    broker_host: heapless::String<64>,
+
+    #[descriptor(uuid = descriptors::CHARACTERISTIC_USER_DESCRIPTION, read, value = "Broker port")]
+    #[characteristic(uuid = "5c0b1a10-6f2e-4b8e-9d3a-7e1f2a3b4d02", read, write)]
+    broker_port: u16,
+
+    /// Must be a topic name without wildcards.
+    #[descriptor(uuid = descriptors::CHARACTERISTIC_USER_DESCRIPTION, read, value = "Topic prefix")]
+    #[characteristic(uuid = "5c0b1a10-6f2e-4b8e-9d3a-7e1f2a3b4d03", read, write)]
+    topic_prefix: heapless::String<64>,
+}
+
 #[gatt_server]
 struct Server {
     wifi_service: WifiService,
+    mqtt_service: MqttService,
 }
 
 /// Starts the BLE configuration server task. Pressing `button` toggles the server, which also
@@ -132,6 +151,11 @@ async fn serve(
         .map(|credentials| credentials.ssid)
         .unwrap_or_default();
     server.set(&server.wifi_service.ssid, &ssid)?;
+
+    let mqtt_config = mqtt::mqtt_config().unwrap_or_default();
+    server.set(&server.mqtt_service.broker_host, &mqtt_config.broker_host)?;
+    server.set(&server.mqtt_service.broker_port, &mqtt_config.broker_port)?;
+    server.set(&server.mqtt_service.topic_prefix, &mqtt_config.topic_prefix)?;
 
     loop {
         set_ble_status(BleStatus::Advertising);
@@ -232,6 +256,30 @@ async fn serve_connection(
                             Err(code) => event.reject(code),
                         }
                     }
+                    GattEvent::Write(write)
+                        if write.handle() == server.mqtt_service.broker_host.handle =>
+                    {
+                        match set_broker_host(write.data()).await {
+                            Ok(()) => event.accept(),
+                            Err(code) => event.reject(code),
+                        }
+                    }
+                    GattEvent::Write(write)
+                        if write.handle() == server.mqtt_service.broker_port.handle =>
+                    {
+                        match set_broker_port(write.data()).await {
+                            Ok(()) => event.accept(),
+                            Err(code) => event.reject(code),
+                        }
+                    }
+                    GattEvent::Write(write)
+                        if write.handle() == server.mqtt_service.topic_prefix.handle =>
+                    {
+                        match set_topic_prefix(write.data()).await {
+                            Ok(()) => event.accept(),
+                            Err(code) => event.reject(code),
+                        }
+                    }
                     _ => event.accept(),
                 };
 
@@ -273,6 +321,49 @@ async fn forget_credentials() -> Result<(), AttErrorCode> {
 
     network::clear_wifi_credentials().await.map_err(|e| {
         warn!("failed to clear Wi-Fi credentials: {}", e);
+        AttErrorCode::UNLIKELY_ERROR
+    })
+}
+
+/// Rejects an empty host.
+async fn set_broker_host(host: &[u8]) -> Result<(), AttErrorCode> {
+    let host = parse_str(host)
+        .filter(|host| !host.is_empty())
+        .ok_or(AttErrorCode::VALUE_NOT_ALLOWED)?;
+
+    info!("MQTT broker host set over BLE to {}", host);
+    update_mqtt_config(|config| config.broker_host = host).await
+}
+
+/// Expects a little endian `u16` and rejects port 0.
+async fn set_broker_port(port: &[u8]) -> Result<(), AttErrorCode> {
+    let port = <[u8; 2]>::try_from(port)
+        .map(u16::from_le_bytes)
+        .ok()
+        .filter(|&port| port != 0)
+        .ok_or(AttErrorCode::VALUE_NOT_ALLOWED)?;
+
+    info!("MQTT broker port set over BLE to {}", port);
+    update_mqtt_config(|config| config.broker_port = port).await
+}
+
+/// Rejects a prefix that is empty or contains topic wildcards.
+async fn set_topic_prefix(prefix: &[u8]) -> Result<(), AttErrorCode> {
+    let prefix = parse_str::<64>(prefix)
+        .filter(|prefix| !prefix.is_empty() && !prefix.contains(['+', '#']))
+        .ok_or(AttErrorCode::VALUE_NOT_ALLOWED)?;
+
+    info!("MQTT topic prefix set over BLE to {}", prefix);
+    update_mqtt_config(|config| config.topic_prefix = prefix).await
+}
+
+/// Saves and applies the current MQTT config with `update` applied to it.
+async fn update_mqtt_config(update: impl FnOnce(&mut MqttConfig)) -> Result<(), AttErrorCode> {
+    let mut config = mqtt::mqtt_config().ok_or(AttErrorCode::UNLIKELY_ERROR)?;
+    update(&mut config);
+
+    mqtt::set_mqtt_config(config).await.map_err(|e| {
+        warn!("failed to save the MQTT config: {}", e);
         AttErrorCode::UNLIKELY_ERROR
     })
 }

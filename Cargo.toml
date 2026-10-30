@@ -21,6 +21,7 @@ esp-bootloader-esp-idf = { version = "0.5.0", features = ["defmt", "esp32c6"] }
 embassy-net = { version = "0.9.1", features = [
   "defmt",
   "dhcpv4",
+  "dns",
   "medium-ethernet",
   "tcp",
   "udp",
@@ -70,6 +71,10 @@ embassy-embedded-hal = { version = "0.6.0", features = ["defmt"] }
 embassy-sync = { version = "0.7.2", features = ["defmt"] }
 heapless = { version = "0.9", features = ["defmt"] }
 embassy-futures = "0.1.2"
+libm = "0.2.16"
+rust-mqtt = { version = "0.5.1", default-features = false, features = ["defmt", "v5", "alloc"] }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
 
 
 # For fine tuning these settings, please refer to https://doc.rust-lang.org/cargo/reference/profiles.html

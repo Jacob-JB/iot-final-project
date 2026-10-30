@@ -10,7 +10,7 @@ use esp_bootloader_esp_idf::partitions::{self, DataPartitionSubType, PartitionTy
 use esp_storage::{FlashStorage, FlashStorageError};
 use sequential_storage::{
     cache::{Cache, Uncached},
-    map::{MapConfig, MapStorage, Value},
+    map::{MapConfig, MapStorage, SerializationError, Value},
 };
 
 pub type StorageError = sequential_storage::Error<FlashStorageError>;
@@ -22,7 +22,7 @@ type Map =
 
 /// Scratch buffer size for (de)serializing items. It must fit the largest serialized key and
 /// value combined, rounded up to the 4 byte flash word size.
-const DATA_BUFFER_SIZE: usize = 128;
+const DATA_BUFFER_SIZE: usize = 256;
 
 struct Storage {
     map: Map,
@@ -39,6 +39,7 @@ static STORAGE: OnceLock<Mutex<CriticalSectionRawMutex, Storage>> = OnceLock::ne
 #[repr(u8)]
 pub enum StorageKey {
     WifiCredentials = 0,
+    MqttConfig = 1,
 }
 
 /// Sets up the key-value store on the NVS partition.
@@ -114,4 +115,33 @@ pub async fn remove(key: StorageKey) -> Result<(), StorageError> {
     let Storage { map, data_buffer } = &mut *storage;
 
     map.remove_item(data_buffer, &(key as u8)).await
+}
+
+/// Writes `s` as a one byte length followed by its bytes. `s` must be at most 255 bytes.
+pub fn serialize_str(s: &str, buffer: &mut [u8]) -> Result<usize, SerializationError> {
+    let len = u8::try_from(s.len()).map_err(|_| SerializationError::InvalidData)?;
+    let out = buffer
+        .get_mut(..1 + s.len())
+        .ok_or(SerializationError::BufferTooSmall)?;
+
+    out[0] = len;
+    out[1..].copy_from_slice(s.as_bytes());
+
+    Ok(out.len())
+}
+
+/// Reads a string written by [`serialize_str`], returning it and the number of bytes it took up.
+pub fn deserialize_str<const N: usize>(
+    buffer: &[u8],
+) -> Result<(heapless::String<N>, usize), SerializationError> {
+    let (&len, rest) = buffer
+        .split_first()
+        .ok_or(SerializationError::InvalidFormat)?;
+    let bytes = rest
+        .get(..len as usize)
+        .ok_or(SerializationError::InvalidFormat)?;
+    let s = core::str::from_utf8(bytes).map_err(|_| SerializationError::InvalidFormat)?;
+    let s = heapless::String::try_from(s).map_err(|_| SerializationError::InvalidFormat)?;
+
+    Ok((s, 1 + bytes.len()))
 }
