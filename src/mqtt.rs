@@ -1,5 +1,5 @@
 use alloc::{format, string::String};
-use core::{convert::Infallible, fmt::Write};
+use core::{convert::Infallible, fmt::Write, num::NonZero};
 
 use defmt::{info, warn};
 use embassy_executor::Spawner;
@@ -13,16 +13,18 @@ use rust_mqtt::{
     client::{
         Client,
         event::Event,
-        options::{ConnectOptions, PublicationOptions, SubscriptionOptions, TopicReference},
+        options::{
+            ConnectOptions, PublicationOptions, SubscriptionOptions, TopicReference, WillOptions,
+        },
     },
-    types::{MqttString, TopicName},
+    config::KeepAlive,
+    types::{MqttBinary, MqttString, TopicName},
 };
 use sequential_storage::map::{SerializationError, Value};
-use serde::Deserialize;
 
 use crate::{
+    blind,
     sensors::SensorReading,
-    servo,
     storage::{self, StorageError, StorageKey, deserialize_str, serialize_str},
 };
 
@@ -38,11 +40,22 @@ const CLIENT_ID_PREFIX: &str = "jacob-brendan-smartblind";
 const BROADCAST_ID: &str = "all";
 
 /// Device topic that each [`SensorReading`] is published to as JSON.
-const SENSOR_SUBTOPIC: &str = "sensors";
+const TELEMETRY_SUBTOPIC: &str = "telemetry";
 
-/// Device topic that [`Command`]s are received on, both under this device's ID and under
-/// [`BROADCAST_ID`].
+/// Device topic that commands for [`blind::handle_command`] are received on, both under this
+/// device's ID and under [`BROADCAST_ID`].
 const COMMAND_SUBTOPIC: &str = "command";
+
+/// Device topic that [`ONLINE_PAYLOAD`] is retained on while connected, and that the broker
+/// replaces with [`OFFLINE_PAYLOAD`] when the connection is lost.
+const STATUS_SUBTOPIC: &str = "status";
+
+const ONLINE_PAYLOAD: &str = r#"{"online":1}"#;
+const OFFLINE_PAYLOAD: &str = r#"{"online":0}"#;
+
+/// Seconds without a packet after which the broker drops the connection and publishes
+/// [`OFFLINE_PAYLOAD`]. Readings are sent far more often than this, so no pings are needed.
+const KEEP_ALIVE_S: u16 = 30;
 
 /// Delay before reconnecting after the broker connection fails or drops.
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
@@ -55,13 +68,6 @@ static MQTT_CONFIG: Watch<CriticalSectionRawMutex, MqttConfig, 1> = Watch::new()
 
 /// The latest reading not yet published.
 static PENDING_READING: Signal<CriticalSectionRawMutex, SensorReading> = Signal::new();
-
-/// A command received over MQTT as JSON.
-#[derive(Deserialize)]
-struct Command {
-    /// Servo position from 0 to 1, as described by [`servo::Servo::write_position`].
-    position: f32,
-}
 
 #[derive(Clone)]
 pub struct MqttConfig {
@@ -158,8 +164,8 @@ pub fn publish_reading(reading: SensorReading) {
     PENDING_READING.signal(reading);
 }
 
-/// Starts publishing the readings given to [`publish_reading`] and applying received
-/// [`Command`]s whenever `stack` is connected.
+/// Starts publishing the readings given to [`publish_reading`] and passing received commands
+/// to [`blind::handle_command`] whenever `stack` is connected.
 ///
 /// Requires [`storage::init`] to have been called.
 ///
@@ -200,8 +206,8 @@ async fn mqtt_task(stack: Stack<'static>) -> ! {
     }
 }
 
-/// Waits for the network, connects to the broker, then publishes readings and applies commands
-/// until the connection fails.
+/// Waits for the network, connects to the broker, then publishes readings and handles received
+/// commands until the connection fails.
 #[allow(
     clippy::large_stack_frames,
     reason = "the socket buffers live on the task's stack"
@@ -237,11 +243,28 @@ async fn run_session(
     let mut buffer = AllocBuffer;
     let mut client = Client::<'_, _, _, 2, 1, 1, 1>::new(&mut buffer);
 
+    let topic = |device_id: &str, subtopic: &str| -> String {
+        format!("{}/{}/{}", config.topic_prefix, device_id, subtopic)
+    };
+
+    let status_topic = topic(&config.device_id, STATUS_SUBTOPIC);
+    let status_topic =
+        topic_name(&status_topic).ok_or("the status topic is not a valid topic name")?;
+    let will = WillOptions::new(
+        status_topic.clone(),
+        MqttBinary::try_from(OFFLINE_PAYLOAD).map_err(|_| "the offline payload is too long")?,
+    )
+    .retain();
+    let keep_alive = KeepAlive::Seconds(NonZero::new(KEEP_ALIVE_S).unwrap());
+
     let client_id = format!("{}-{}", CLIENT_ID_PREFIX, config.device_id);
     client
         .connect(
             socket,
-            &ConnectOptions::new().clean_start(),
+            &ConnectOptions::new()
+                .clean_start()
+                .keep_alive(keep_alive)
+                .will(will),
             Some(
                 MqttString::try_from(client_id.as_str())
                     .map_err(|_| "the client ID is too long")?,
@@ -251,10 +274,6 @@ async fn run_session(
         .map_err(|_| "failed to connect to the broker")?;
 
     info!("connected to MQTT broker as {}", client_id.as_str());
-
-    let topic = |device_id: &str, subtopic: &str| -> String {
-        format!("{}/{}/{}", config.topic_prefix, device_id, subtopic)
-    };
 
     for command_topic in [
         topic(&config.device_id, COMMAND_SUBTOPIC),
@@ -271,15 +290,25 @@ async fn run_session(
         info!("subscribing to {}", command_topic.as_str());
     }
 
-    let sensor_topic = topic(&config.device_id, SENSOR_SUBTOPIC);
-    let sensor_topic =
-        topic_name(&sensor_topic).ok_or("the sensor topic is not a valid topic name")?;
-    let publish_options = PublicationOptions::new(TopicReference::Name(sensor_topic)).retain();
+    client
+        .publish(
+            &PublicationOptions::new(TopicReference::Name(status_topic)).retain(),
+            Bytes::from(ONLINE_PAYLOAD),
+        )
+        .await
+        .map_err(|_| "failed to publish the online status")?;
+
+    let telemetry_topic = topic(&config.device_id, TELEMETRY_SUBTOPIC);
+    let telemetry_topic =
+        topic_name(&telemetry_topic).ok_or("the telemetry topic is not a valid topic name")?;
+    let telemetry_options = PublicationOptions::new(TopicReference::Name(telemetry_topic));
 
     loop {
         match select(client.poll(), PENDING_READING.wait()).await {
             Either::First(event) => match event.map_err(|_| "failed to poll the broker")? {
-                Event::Publish(publish) => apply_command(&publish.message),
+                Event::Publish(publish) => {
+                    handle_command(publish.topic.as_ref().as_str(), &publish.message)
+                }
                 Event::Suback(suback) if suback.reason_code.is_erroneous() => {
                     return Err("the broker rejected a command subscription");
                 }
@@ -290,7 +319,7 @@ async fn run_session(
                     .map_err(|_| "failed to encode the sensor reading")?;
 
                 client
-                    .publish(&publish_options, Bytes::from(payload.as_str()))
+                    .publish(&telemetry_options, Bytes::from(payload.as_str()))
                     .await
                     .map_err(|_| "failed to publish the sensor reading")?;
             }
@@ -303,19 +332,10 @@ fn topic_name(topic: &str) -> Option<TopicName<'_>> {
     MqttString::try_from(topic).ok().and_then(TopicName::new)
 }
 
-/// Applies `payload` if it is a valid [`Command`] JSON object.
-fn apply_command(payload: &[u8]) {
-    match serde_json::from_slice::<Command>(payload) {
-        Ok(Command { position }) if (0.0..=1.0).contains(&position) => {
-            info!("servo position set over MQTT to {}", position);
-            servo::set_position(position);
-        }
-        Ok(Command { position }) => {
-            warn!(
-                "rejected servo position {} because it is outside 0 to 1",
-                position
-            )
-        }
-        Err(_) => warn!("received a command that is not a valid command object"),
+/// Passes a command received on `topic` to [`blind::handle_command`].
+fn handle_command(topic: &str, payload: &[u8]) {
+    match blind::handle_command(payload) {
+        Ok(()) => info!("accepted command on {}", topic),
+        Err(e) => warn!("rejected command on {}: {}", topic, e),
     }
 }

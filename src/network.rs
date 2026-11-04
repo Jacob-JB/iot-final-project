@@ -24,6 +24,11 @@ static WIFI_CREDENTIALS: Watch<CriticalSectionRawMutex, Option<WifiCredentials>,
 /// Delay before retrying after a failed connection attempt or a dropped connection.
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
+/// TESTING ONLY, remove before committing: the SSID and password used when none are stored.
+/// The iPhone hotspot name uses a curly apostrophe (U+2019), not `'`.
+const TEST_SSID: &str = "Brendan\u{2019}s iPhone";
+const TEST_PASSWORD: &str = "ILCA7-IOT";
+
 #[derive(Clone)]
 pub struct WifiCredentials {
     pub ssid: heapless::String<32>,
@@ -118,7 +123,15 @@ async fn connection_task(mut controller: WifiController<'static>) -> ! {
         .receiver()
         .expect("Wi-Fi credentials receiver already taken");
 
-    let stored = storage::load::<WifiCredentials>(StorageKey::WifiCredentials).await;
+    let stored = storage::load::<WifiCredentials>(StorageKey::WifiCredentials)
+        .await
+        .or_else(|| {
+            info!("no stored Wi-Fi credentials, using the hardcoded test network");
+            Some(WifiCredentials {
+                ssid: heapless::String::try_from(TEST_SSID).unwrap(),
+                password: heapless::String::try_from(TEST_PASSWORD).unwrap(),
+            })
+        });
     WIFI_CREDENTIALS.sender().send(stored);
 
     let mut credentials = receiver.get().await;
