@@ -1,4 +1,4 @@
-use defmt::info;
+use defmt::debug;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Ticker};
 use serde::Serialize;
@@ -8,10 +8,10 @@ use esp_hal::{
     peripherals::{ADC1, GPIO4, GPIO5},
 };
 
-use crate::mqtt;
+use crate::{blind, mqtt};
 
 /// Time between sensor readings.
-const POLL_INTERVAL: Duration = Duration::from_secs(5);
+const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Voltage powering the sensor voltage dividers, in millivolts.
 const SUPPLY_MV: f32 = 3300.0;
@@ -88,7 +88,8 @@ impl<PIN: AdcChannel> AnalogSensor<PIN> {
 }
 
 /// Starts reading the thermistor on GPIO4 and the photoresistor on GPIO5 every
-/// [`POLL_INTERVAL`], and publishing each reading with [`mqtt::publish_reading`].
+/// [`POLL_INTERVAL`], and passing each reading to [`blind::submit_reading`] and
+/// [`mqtt::publish_reading`].
 ///
 /// # Panics
 ///
@@ -120,11 +121,18 @@ async fn sensor_task(
 ) -> ! {
     let mut ticker = Ticker::every(POLL_INTERVAL);
 
+    // The first conversion after the ADC starts is unreliable, and would skew the controller's
+    // moving averages for a while, so it is thrown away.
+    thermistor.read_resistance(&mut adc).await;
+    photoresistor.read_resistance(&mut adc).await;
+
     loop {
         let temperature = thermistor.read_temperature(&mut adc).await;
         let light = photoresistor.read_light(&mut adc).await;
-        info!("temperature: {} °C, light: {} lux", temperature, light);
-        mqtt::publish_reading(SensorReading { temperature, light });
+        debug!("temperature: {} °C, light: {} lux", temperature, light);
+        let reading = SensorReading { temperature, light };
+        mqtt::publish_reading(reading);
+        blind::submit_reading(reading);
 
         ticker.next().await;
     }

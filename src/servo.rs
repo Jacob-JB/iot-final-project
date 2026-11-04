@@ -1,5 +1,8 @@
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use embassy_executor::Spawner;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
+use embassy_time::Duration;
 use esp_hal::{
     Async,
     gpio::{self, interconnect::PeripheralOutput},
@@ -15,8 +18,17 @@ const MIN_PULSE_US: u16 = 1_000;
 /// Pulse width for the servo's maximum position.
 const MAX_PULSE_US: u16 = 2_000;
 
-/// The latest position given to [`set_position`] that the servo task hasn't picked up.
-static TARGET_POSITION: Signal<CriticalSectionRawMutex, f32> = Signal::new();
+/// The latest target given to [`set_position`] that the servo task hasn't picked up.
+static TARGET: Signal<CriticalSectionRawMutex, Target> = Signal::new();
+
+/// Bits of the `f32` position the servo is currently driven to, or of NaN before it is driven.
+static POSITION: AtomicU32 = AtomicU32::new(f32::NAN.to_bits());
+
+#[derive(Clone, Copy)]
+struct Target {
+    position: f32,
+    travel_time: Duration,
+}
 
 /// Drives an SG90 servo with a 50 Hz pulse train.
 pub struct Servo<'d> {
@@ -70,13 +82,26 @@ impl<'d> Servo<'d> {
 }
 
 /// Moves the servo to `position` and holds it there, as described by [`Servo::write_position`].
-pub fn set_position(position: f32) {
-    TARGET_POSITION.signal(position);
+///
+/// The servo moves at a constant speed that would take `travel_time` to cover the full range,
+/// or jumps straight there if `travel_time` is zero.
+pub fn set_position(position: f32, travel_time: Duration) {
+    TARGET.signal(Target {
+        position,
+        travel_time,
+    });
+}
+
+/// Returns the position the servo is currently driven to, or `None` before the first
+/// [`set_position`].
+pub fn position() -> Option<f32> {
+    let position = f32::from_bits(POSITION.load(Ordering::Relaxed));
+    (!position.is_nan()).then_some(position)
 }
 
 /// Starts driving the servo connected to `pin` to the positions given to [`set_position`].
 ///
-/// The servo is not driven until the first position is set.
+/// The servo is not driven until the first position is set, which it jumps straight to.
 ///
 /// The RMT peripheral must be clocked at 80 MHz.
 ///
@@ -95,12 +120,21 @@ pub fn init(
 
 #[embassy_executor::task]
 async fn servo_task(mut servo: Servo<'static>) -> ! {
-    let mut position = TARGET_POSITION.wait().await;
+    let mut target = TARGET.wait().await;
+    let mut position = target.position;
 
     loop {
-        if let Some(new_position) = TARGET_POSITION.try_take() {
-            position = new_position;
+        if let Some(new_target) = TARGET.try_take() {
+            target = new_target;
         }
+
+        // Each frame takes FRAME_US to send, so this is how far one frame may move.
+        let max_step = match target.travel_time.as_micros() {
+            0 => f32::INFINITY,
+            travel_us => f32::from(FRAME_US) / travel_us as f32,
+        };
+        position += (target.position - position).clamp(-max_step, max_step);
+        POSITION.store(position.to_bits(), Ordering::Relaxed);
 
         servo.write_position(position).await;
     }
