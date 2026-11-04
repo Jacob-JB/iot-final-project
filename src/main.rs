@@ -1,3 +1,16 @@
+//! This project uses a cooperative scheduler.
+//! Anytime there is an `.await` it is a point at which the task can
+//! pause to allow other tasks to complete work.
+//! Tasks register wakers, making the majority of the app interrupt driven.
+//!
+//! This file is contains the main entry point for the app,
+//! every other module contains a `init` function which takes ownership
+//! of relevant peripherals and starts tasks.
+//!
+//! Communication between tasks is handled by primitives from the [`embassy_sync`] crate.
+//! These are declared in static memory and typically make use of critical section memory
+//! to be interrupt safe.
+
 #![no_std]
 #![no_main]
 #![deny(
@@ -61,7 +74,12 @@ async fn main(spawner: Spawner) -> ! {
 
     status_led::init(spawner, rmt.channel0, peripherals.GPIO8);
     servo::init(spawner, rmt.channel1, peripherals.GPIO6);
-    sensors::init(spawner, peripherals.ADC1, peripherals.GPIO4, peripherals.GPIO5);
+    sensors::init(
+        spawner,
+        peripherals.ADC1,
+        peripherals.GPIO4,
+        peripherals.GPIO5,
+    );
     storage::init(peripherals.FLASH);
     let stack = network::init_network(spawner, peripherals.WIFI);
     mqtt::init(spawner, stack);

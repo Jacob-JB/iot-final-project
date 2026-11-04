@@ -18,7 +18,6 @@ const CONTROLLER_SLOTS: usize = 20;
 
 const DEVICE_NAME: &str = "smart-blind";
 
-/// Locally administered random static address, see the Bluetooth Core Spec, Vol 6, Part B, 1.3.2.
 const ADDRESS: [u8; 6] = [0xC0, 0x45, 0x44, 0x43, 0x42, 0xC1];
 
 /// How long the server advertises without a connection before it is disabled.
@@ -222,8 +221,7 @@ enum ConnectionEnd {
     ButtonPressed,
 }
 
-/// Handles GATT requests until the client disconnects or `button` is pressed. The connection is
-/// still open when this returns [`ConnectionEnd::ButtonPressed`].
+/// Handles GATT requests until the client disconnects or `button` is pressed.
 async fn serve_connection(
     server: &Server<'_>,
     connection: &GattConnection<'_, '_, DefaultPacketPool>,
